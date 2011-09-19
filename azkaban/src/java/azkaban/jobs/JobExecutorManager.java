@@ -3,12 +3,16 @@ package azkaban.jobs;
 import java.io.File;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Queue;
 import java.util.UUID;
 import java.util.Vector;
 import java.util.concurrent.ConcurrentHashMap;
@@ -17,7 +21,6 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-
 import azkaban.app.JobDescriptor;
 import org.apache.log4j.Logger;
 import org.joda.time.DateTime;
@@ -48,7 +51,14 @@ public class JobExecutorManager {
     private Properties runtimeProps = null;
     private final FlowManager allKnownFlows;
     private final ThreadPoolExecutor executor;
-    private final Map<String, ExecutingJobAndInstance> executing;
+ 
+    // keeps track of executing <jobName> and <list of instanceIds>
+    private final Multimap<String, String> executingJobs;
+    // keeps track of <instanceId> and its <ExecutingJobAndInstance> 
+    private final Map<String, ExecutingJobAndInstance> executingInsts;
+    // Queuing related: keeps track of <jobName> and <list of <QueuingJobAndInstance>> 
+    private final Map<String, Queue<QueuedJob>> queued;
+    // keeps track of completed <jobName> and <list of <JobExecution>>   
     private final Multimap<String, JobExecution> completed;
     
     @SuppressWarnings("unchecked")
@@ -58,33 +68,51 @@ public class JobExecutorManager {
     		Mailman mailman,                     
     		String jobSuccessEmail,
             String jobFailureEmail,
-            int maxThreads
-    ) {
+            int maxThreads) {
+    	
     	this.jobManager = jobManager;
     	this.mailman = mailman;
     	this.jobSuccessEmail = jobSuccessEmail;
     	this.jobFailureEmail = jobFailureEmail;
     	this.allKnownFlows = allKnownFlows;
-        Multimap<String, JobExecution> typedMultiMap = HashMultimap.create();
     	
+        Multimap<String, JobExecution> typedMultiMap = HashMultimap.create();
         this.completed = Multimaps.synchronizedMultimap(typedMultiMap);
-    	this.executing = new ConcurrentHashMap<String, ExecutingJobAndInstance>();
+        
+        Multimap<String, String> execMultiMap = HashMultimap.create();
+        this.executingJobs = Multimaps.synchronizedMultimap(execMultiMap);
+        this.executingInsts = new ConcurrentHashMap<String, ExecutingJobAndInstance>();
+        
+    	this.queued = new ConcurrentHashMap<String, Queue<QueuedJob>> ();
+    	
     	this.executor = new ThreadPoolExecutor(0, maxThreads, 10, TimeUnit.SECONDS, new LinkedBlockingQueue(), new ExecutorThreadFactory());
-    }
+    } 
     
     /**
-     * Cancels an already running job.
+     * Cancels an specific instance of an already running job.
      * 
      * @param name
      * @throws Exception
      */
-    public void cancel(String name) throws Exception {
-    	ExecutingJobAndInstance instance = executing.get(name);
-        if(instance == null) {
-            throw new IllegalArgumentException("'" + name + "' is not currently running.");
+
+    public void cancel(String jobId) throws Exception {
+    	
+    	logger.info("Cancelling job-id [" + jobId + "]");
+        ExecutingJobAndInstance jobInst = executingInsts.get(jobId);
+    
+        if(jobInst == null) {
+            throw new IllegalArgumentException("[" + jobId + "] is not currently running.");
         }
-        
-        instance.getExecutableFlow().cancel();
+        else {
+        	JobExecution runningJob = jobInst.getScheduledJob();
+        	ExecutableFlow flow = jobInst.getExecutableFlow();
+        	logger.info("Cancelling job [" + runningJob.getId() + "] id=[" + jobId + "] time=[" + new DateTime().getMillis() + "]");
+        	flow.cancel();
+        	
+        	// TODO: superfluous; will be taken care by the flow.cancel()
+        	//serviceQueuedJob(runningJob);
+        	//removeExecutingJob(runningJob);
+        }
     }
 
     /**
@@ -94,10 +122,11 @@ public class JobExecutorManager {
      * @param ignoreDep
      */
     public void execute(String id, boolean ignoreDep) {
+
     	final ExecutableFlow flowToRun = allKnownFlows.createNewExecutableFlow(id);
 
-    	if (isExecuting(id)) {
-    		throw new JobExecutionException("Job " + id + " is already running.");
+    	if (isExecuting(id) && !canQueue(id)) {
+    			throw new JobExecutionException("Job " + id + " is already running.");
     	}
     	
         if(ignoreDep) {
@@ -105,29 +134,22 @@ public class JobExecutorManager {
                 subFlow.markCompleted();
             }
         }
-        
         execute(flowToRun);
     }
-    
+         
     /**
      * Runs the job immediately
      * 
      * @param holder The execution of the flow to run
      */
     public void execute(ExecutableFlow flow) {
-    	if (isExecuting(flow.getName())) {
+    	if (isExecuting(flow.getName()) && !canQueue(flow.getName())) {
     		throw new JobExecutionException("Job " + flow.getName() + " is already running.");
     	}
     	
         final Props parentProps = produceParentProperties(flow);
         FlowExecutionHolder holder = new FlowExecutionHolder(flow, parentProps);
-        logger.info("Executing job '" + flow.getName() + "' now");
-
-        final JobExecution executingJob = new JobExecution(flow.getName(),
-                                                       new DateTime(),
-                                                       true);
-
-        executor.execute(new ExecutingFlowRunnable(holder, executingJob));
+        execute(holder);        
     }
    
     /**
@@ -136,18 +158,36 @@ public class JobExecutorManager {
      * @param holder The execution of the flow to run
      */
     public void execute(FlowExecutionHolder holder) {
+    	
         ExecutableFlow flow = holder.getFlow();
         
-    	if (isExecuting(flow.getName())) {
-    		throw new JobExecutionException("Job " + flow.getName() + " is already running.");
-    	}
+        // case-1: max allowed instances are already executing and can not queue => throw exception (drop instances)   
+    	if (isExecuting(flow.getName()) && !canQueue(flow.getName())) 
+    		throw new JobExecutionException("Job [" + flow.getName() + "] is already running and cannot queue!.");
         
-        logger.info("Executing job '" + flow.getName() + "' now");
-
-        final JobExecution executingJob = new JobExecution(flow.getName(),
-                                                       new DateTime(),
-                                                       true);
-        executor.execute(new ExecutingFlowRunnable(holder, executingJob));
+    	final DateTime ts = new DateTime();
+        final JobExecution executingJob = new JobExecution(flow.getName(), flow.getId(), ts, true);
+        
+        // case-2: max allowed instances are already executing, but can queue
+        if (isExecuting(flow.getName()) && canQueue(flow.getName())) {
+        	
+        	addToQueue(new QueuedJob(holder, executingJob, this));
+        }
+        // case-3: max allowed instances not reached yet
+        else {
+        	// case-3a: see if anything is left in the queue; if so, queue the new one and execute the queued ones (rare case)
+        	if (getQueueSize(executingJob.getId()) > 0) {
+        		addToQueue(new QueuedJob(holder, executingJob, this));
+        		while(isExecuting(executingJob.getId()))
+        			serviceQueuedJob(executingJob);
+        	}
+        	// case-3b: none in the queue; go ahead and execute
+        	else {
+        		logger.info("Executing job=[" + flow.getName() + "] instanceid=[" + flow.getId() + "] time=[" + ts.getMillis() + "]");
+        		ExecutingFlowRunnable execFlowRunnable = new ExecutingFlowRunnable(holder, executingJob);        	
+        		executor.execute(execFlowRunnable);
+        	}
+        }
     }
     
     /**
@@ -343,8 +383,9 @@ public class JobExecutorManager {
         }
     }
     
+	
     public class ExecutingJobAndInstance {
-
+    	
         private final ExecutableFlow flow;
         private final JobExecution scheduledJob;
 
@@ -359,8 +400,43 @@ public class JobExecutorManager {
 
         public JobExecution getScheduledJob() {
             return scheduledJob;
-        }
+        }                
     }
+    
+//    public class QueuingJobAndInstance extends ExecutingJobAndInstance {
+//    	
+//    	private final JobExecutorManager jobExecutionManager;
+//    	private final FlowExecutionHolder holder;
+//    	private final long queuedTime;
+//    	
+//    	private QueuingJobAndInstance(FlowExecutionHolder holder, JobExecution queuedJob, JobExecutorManager jobExecManager) {
+//
+//    		super(holder.getFlow(), queuedJob);
+//    		this.jobExecutionManager = jobExecManager;
+//    		this.holder = holder;
+//    		this.queuedTime = new DateTime().getMillis();
+//    	}
+//    	
+//    	public JobExecutorManager getJobExecutorManager() {
+//    		return this.jobExecutionManager;
+//    	}
+//    	
+//    	public FlowExecutionHolder getFlowExecutionHolder() {
+//    		return this.holder;
+//    	}
+//    	
+//    	public String getJobName() {
+//    		return getExecutableFlow().getName();
+//    	}
+//    	
+//    	public String getJobId() {
+//    		return getExecutableFlow().getId();
+//    	}
+//    	
+//    	public String getQueuedTime() {
+//    		return DateTimeFormat.forPattern("MM-dd-yyyy HH:mm:ss").print(queuedTime);
+//    	}	
+//    }
    
     /**
      * A runnable adapter for a Job
@@ -390,15 +466,16 @@ public class JobExecutorManager {
                 senderAddress = jobDescriptor.getSenderEmail();
                 final String senderEmail = senderAddress;
 
-                // mark the job as executing
-                runningJob.setStartTime(new DateTime());
-
-                executing.put(flow.getName(), new ExecutingJobAndInstance(flow, runningJob));
+                // mark the job as executing by adding it to executingJobs list
+                runningJob.setStartTime(new DateTime()); 
+                executingInsts.put(flow.getId(), new ExecutingJobAndInstance(flow, runningJob));          
+                executingJobs.put(flow.getName(), flow.getId());
+                                
                 flow.execute(holder.getParentProps(), new FlowCallback() {
 
                     @Override
                     public void progressMade() {
-                        allKnownFlows.saveExecutableFlow(holder);
+                        allKnownFlows.saveExecutableFlow(holder);                      
                     }
 
                     @Override
@@ -408,7 +485,7 @@ public class JobExecutorManager {
                         try {
                             allKnownFlows.saveExecutableFlow(holder);
                             switch(status) {
-                                case SUCCEEDED:
+                                case SUCCEEDED: 
                                     if (jobDescriptor.getSendSuccessEmail()) {
                                         sendSuccessEmail(
                                                 runningJob,
@@ -432,40 +509,147 @@ public class JobExecutorManager {
                                                    finalEmailList);
                             }
                         } catch(RuntimeException e) {
-                            logger.warn("Exception caught while saving flow/sending emails", e);
-                            executing.remove(runningJob.getId());
+                            logger.warn("Exception caught while saving flow/sending emails", e);   
+                            serviceQueuedJob(runningJob);
+                            removeFromExecutingJobs(runningJob);
                             throw e;
                         } finally {
-                            // mark the job as completed
-                            executing.remove(runningJob.getId());
+                            // mark the job as completed and remove from executing list
+                        	// executing.remove(runningJob.getId());
+                        	serviceQueuedJob(runningJob);
+                        	removeFromExecutingJobs(runningJob);
                             completed.put(runningJob.getId(), runningJob);
                         }
                     }
                 });
-
                 allKnownFlows.saveExecutableFlow(holder);
             } catch(Throwable t) {
-            	executing.remove(runningJob.getId());
+            	serviceQueuedJob(runningJob);
+            	removeFromExecutingJobs(runningJob);
             	if(emailList != null) {
                     sendErrorEmail(runningJob, t, senderAddress, emailList);
                 }
-                
                 logger.warn(String.format("An exception almost made it back to the ScheduledThreadPool from job[%s]",
                 		runningJob),
                             t);
             }
         }
     }
-
-    public boolean isExecuting(String name) {
-        return executing.containsKey(name);
+    
+    public boolean isExecuting(String jobName) {
+    	
+        if (executingJobs.containsKey(jobName)) {        	
+        	int maxParallelRuns = jobManager.getJobDescriptor(jobName).getProps().getInt(JobDescriptor.JOB_MAX_PARALLEL_RUNS, 1);
+        	if ((maxParallelRuns != -1) && (executingJobs.get(jobName).size() >= maxParallelRuns)) {
+        		return true;
+        	}
+        	else
+        		return false;
+        }
+        else {
+        	return false;
+        }
+    }
+    
+   public boolean canQueue(String jobName) {
+    	
+	   int maxQueueSize = jobManager.getJobDescriptor(jobName).getProps().getInt(JobDescriptor.JOB_QUEUE_SIZE, 0);
+	   int currQueueSize = getQueueSize(jobName);
+	   if ((maxQueueSize == -1) || (currQueueSize <= maxQueueSize)) 
+		   return true;
+	   else
+		   return false;
+    }
+   
+   public int getQueueSize(String jobName) {
+	   
+	   if (!queued.containsKey(jobName))
+		   return 0;
+	   else
+		   return queued.get(jobName).size();
+   }
+   
+   public Collection<ExecutingJobAndInstance> getExecutingJobs() {
+	   return executingInsts.values();
     }
 
-    public Collection<ExecutingJobAndInstance> getExecutingJobs() {
-        return executing.values();
-    }
-
-    public Multimap<String, JobExecution> getCompleted() {
+   public Multimap<String, JobExecution> getCompleted() {
         return completed;
     }
+    
+   public Collection<QueuedJob> getQueued() {
+
+    	Collection<QueuedJob> queuedInstances = new ArrayList<QueuedJob>(); 
+        Collection<Queue<QueuedJob>> collQueued = queued.values();
+        
+        for(Queue<QueuedJob> q : collQueued) {
+        	Iterator<QueuedJob> itr = q.iterator();
+        	while(itr.hasNext()) {
+            	queuedInstances.add(itr.next());
+        	}
+        }
+        return queuedInstances;	    	
+    }
+
+	private ThreadPoolExecutor getThreadPoolExecutor() {
+		return this.executor;
+	}
+	
+	private void addToQueue(QueuedJob execJobInst) {
+		
+		String jobName = execJobInst.getName();
+		String jobId = execJobInst.getId();
+		
+		Queue<QueuedJob> qItems = queued.get(jobName);
+		if (qItems == null) {
+			qItems = new LinkedList<QueuedJob>();
+			queued.put(jobName, qItems);
+		}
+		logger.info("Queuing job [" + jobName + "] instanceid=[" + jobId + "] time=[" + new DateTime().getMillis() + "]");
+		qItems.add(execJobInst);
+   }
+	
+   private void serviceQueuedJob(JobExecution runningJob) {
+	   
+		Queue<QueuedJob> qItems = queued.get(runningJob.getId()); // pass in the jobName
+		if ((qItems != null) && (qItems.peek() != null)) {
+			QueuedJob qInst = qItems.poll();
+			String jobName = qInst.getName();
+			String jobInstId = qInst.getId();
+			logger.info("Servicing Queued job [" + jobName + "] instanceid=[" + jobInstId + "] time=[" + new DateTime().getMillis() + "]");
+			qInst.getJobExecutorManager().getThreadPoolExecutor().execute(new ExecutingFlowRunnable(qInst.getFlowExecutionHolder(), qInst.getQueuedJob()));
+		}	   
+   }
+	
+   public void removeFromExecutingJobs(JobExecution runningJob) {
+
+	   String jobName = runningJob.getId();
+	   String jobId = runningJob.getInstId();
+	   removeFromExecutingJobs(jobName, jobId);
+   }
+   
+   public void removeFromExecutingJobs(String jobName, String jobId) {
+
+       logger.info("Removing job from executing list [" + jobName + "] instanceid=[" + jobId + "] time=[" + new DateTime().getMillis() + "]");
+       executingJobs.get(jobName).remove(jobId);
+       executingInsts.remove(jobId);
+   }
+   
+	public void removeJobFromQueue(String jobName, String jobId) {
+		
+		Queue<QueuedJob> qItems = queued.get(jobName);
+		if (qItems != null) {
+			QueuedJob obj = null;
+			for(QueuedJob o : qItems) {
+				if (o.getId().equals(jobId)) {
+					obj = o;
+					break;
+				}
+			}
+			if (obj != null) {
+				logger.info("Removing from Queue job [" + jobName + "] instanceid=[" + jobId + "] time=[" + new DateTime().getMillis() + "]");
+				qItems.remove(obj);
+			}
+		}
+   }
 }

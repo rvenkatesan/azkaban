@@ -78,6 +78,7 @@ public class IndexServlet extends AbstractAzkabanServlet {
         page.add("flows", app.getAllFlows());
         page.add("scheduled", app.getScheduleManager().getSchedule());
         page.add("executing", app.getJobExecutorManager().getExecutingJobs());
+        page.add("queued", app.getJobExecutorManager().getQueued());
         page.add("completed", app.getJobExecutorManager().getCompleted());
         page.add("rootJobNames", app.getAllFlows().getRootFlowNames());
         page.add("folderNames", app.getAllFlows().getFolders());
@@ -99,6 +100,10 @@ public class IndexServlet extends AbstractAzkabanServlet {
 
         AzkabanApplication app = getApplication();
         String action = getParam(req, "action");
+        
+        logger.info("SERVLET action ==> " + action);
+        
+        
         if ("loadjobs".equals(action)) {
         	resp.setContentType("application/json");
         	String folder = getParam(req, "folder");
@@ -109,6 +114,8 @@ public class IndexServlet extends AbstractAzkabanServlet {
         else if("unschedule".equals(action)) {
             String jobid = getParam(req, "job");
             app.getScheduleManager().removeScheduledJob(jobid);
+        } else if ("queueremove".equals(action)) {
+        	cancelQueuedJob(app, req);
         } else if("cancel".equals(action)) {
             cancelJob(app, req);
         } else if("schedule".equals(action)) {
@@ -166,10 +173,20 @@ public class IndexServlet extends AbstractAzkabanServlet {
     	
     }
     
+    
+    private void cancelQueuedJob(AzkabanApplication app, HttpServletRequest req) throws ServletException {
+
+        String jobId = getParam(req, "job");
+        String jobName = getParam(req, "jobname");
+        app.getJobExecutorManager().removeJobFromQueue(jobName, jobId);
+    }
+
+    
     private void cancelJob(AzkabanApplication app, HttpServletRequest req) throws ServletException {
 
         String jobId = getParam(req, "job");
         try {
+        	logger.info("Cancelling job [" + jobId + "]");
 			app.getJobExecutorManager().cancel(jobId);
 		} catch (Exception e1) {
 			logger.error("Error cancelling job " + e1);

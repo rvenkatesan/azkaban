@@ -78,7 +78,6 @@ PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
 		  	   <div id="executing-tab">
 		  	       <div class="box">
 		       		<h3>Executing Jobs</h3>
-
 					      <table id="execTable" class="jobtable execing-jobs-table translucent">
 					        <colgroup>
 			  		          	<col class="execid"/>
@@ -99,7 +98,54 @@ PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
 					      No jobs currently executing.
 					    #end
 		  	       </div>
+
+		  	       <div class="box">
+		  	       	    <h3>Queued Jobs</h3>
+						#if($queued.size() > 0)
+					      <table id="queueTable" class="jobtable execing-jobs-table tableHistory translucent">
+							<colgroup>
+			  		          	<col class="execid"/>
+			  		          	<col class="titlecol"/>
+			  		          	<col class="datetime"/>
+			  		          	<col class="duration"/>
+			   		          	<col class="action"/>
+			  		        </colgroup>
+					        <tr>
+					          <th>Id</th>
+					          <th>Name</th>
+					          <th>Queue Time</th>
+					          <th>Period</th>
+					          <th>Action</th>
+					        </tr>
+					        #foreach($q in $queued)
+					          <tr>
+					            <td>$q.id</td>
+					            <td class="titlecol"> <a class="job-name" href="${context}/job?id=${q.name}&logs">$q.name</a></td>
+					            <td>$q.time</td>
+					            <td>$q.period</td>
+					            <td>
+					              <form action="${context}/" method="post" style="display: inline">
+					                <input type="hidden" name="job" value="${q.id}"/>
+					                <input type="hidden" name="jobname" value="${q.name}"/>
+									<input type="hidden" name="action" value="queueremove"/>     
+					                <input id="test" type="submit" value="Remove" />      
+					              </form>
+									<script>
+					                	$('#test').click(function() {
+ 												 
+										});					                	
+					                </script>
+					              
+					            </td>
+					          </tr>
+					        #end
+					      </table>
+					      #else
+					      	No Queued jobs at this time.
+					      #end	
+		  	       </div>		  		  	       	       		  	       
 		  	   </div>
+		  	   		  	   		  	   
 		  	   <div id="schedule-tab">
 		  	       <div class="box">
 		  	       	    <h3>Scheduled Jobs</h3>

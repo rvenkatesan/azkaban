@@ -208,6 +208,7 @@ public class JobManager {
                 DateTime end = null;
                 boolean succeeded = false;
                 DateTime dirDate = null;
+                String jobId = null;
                 try {
                     dirDate = JOB_EXEC_DATE_FORMAT.parseDateTime(execDir.getName());
                 } catch (Exception e) {
@@ -219,10 +220,13 @@ public class JobManager {
                     start = new DateTime(props.getLong("start"));
                     end = new DateTime(props.getLong("end"));
                     succeeded = props.getBoolean("succeeded");
+                    if (props.containsKey("id"))
+                    	jobId = props.getString("id");
                 }
                 String logFile = jobName + File.separator + execDir.getName() + File.separator
                                  + jobName + "." + execDir.getName() + ".log";
                 execs.add(new JobExecution(jobName,
+                							jobId,
                                            start == null ? dirDate : start,
                                            end,
                                            succeeded,

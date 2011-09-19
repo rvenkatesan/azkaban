@@ -16,6 +16,8 @@
 
 package azkaban.jobs;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 import org.joda.time.DateTime;
 import org.joda.time.Duration;
 
@@ -33,8 +35,9 @@ public class JobExecution {
     private boolean succeeded;
     private String log;
     private final boolean ignoreDependencies;
-
-    public JobExecution(String id, DateTime start, DateTime end, boolean succeeded, boolean ignoreDependecies, String log) {
+    private final String instId;
+    
+    public JobExecution(String id, String instId, DateTime start, DateTime end, boolean succeeded, boolean ignoreDependecies, String log) {
         super();
         this.id = id;
         this.startTime = start;
@@ -42,14 +45,15 @@ public class JobExecution {
         this.succeeded = succeeded;
         this.log = log;
         this.ignoreDependencies = ignoreDependecies;
+        this.instId = instId;
     }
 
-    public JobExecution(String jobName, DateTime start, boolean ignoreDependecies) {
-        this(jobName, start, null, false, ignoreDependecies, null);
+    public JobExecution(String jobName, String instId, DateTime start, boolean ignoreDependecies) {
+        this(jobName, instId, start, null, false, ignoreDependecies, null);
     }
     
-    public JobExecution(String jobName, boolean ignoreDependecies) {
-        this(jobName, null, null, false, ignoreDependecies, null);
+    public JobExecution(String jobName, String instId, boolean ignoreDependecies) {
+        this(jobName, instId, null, null, false, ignoreDependecies, null);
     }
     
     public String getId() {
@@ -97,4 +101,9 @@ public class JobExecution {
 	public boolean isDependencyIgnored() {
 		return ignoreDependencies;
 	}
+	
+	public String getInstId() {
+		return this.instId;
+	}
+	
 }

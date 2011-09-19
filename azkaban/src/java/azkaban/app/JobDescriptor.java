@@ -49,6 +49,8 @@ public class JobDescriptor {
     public static final String LOGGER_PATTERN = "logger.pattern";
     public static final String MAIL_SENDER = "mail.sender";
     public static final String SEND_SUCCESS_EMAIL = "azkaban.send.success.email";
+    public static final String JOB_MAX_PARALLEL_RUNS = "job.max.parallel.runs";
+    public static final String JOB_QUEUE_SIZE = "job.queue.size";
 
     public static final Comparator<JobDescriptor> NAME_COMPARATOR = new Comparator<JobDescriptor>() {
 
