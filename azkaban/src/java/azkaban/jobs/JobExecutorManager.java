@@ -402,42 +402,7 @@ public class JobExecutorManager {
             return scheduledJob;
         }                
     }
-    
-//    public class QueuingJobAndInstance extends ExecutingJobAndInstance {
-//    	
-//    	private final JobExecutorManager jobExecutionManager;
-//    	private final FlowExecutionHolder holder;
-//    	private final long queuedTime;
-//    	
-//    	private QueuingJobAndInstance(FlowExecutionHolder holder, JobExecution queuedJob, JobExecutorManager jobExecManager) {
-//
-//    		super(holder.getFlow(), queuedJob);
-//    		this.jobExecutionManager = jobExecManager;
-//    		this.holder = holder;
-//    		this.queuedTime = new DateTime().getMillis();
-//    	}
-//    	
-//    	public JobExecutorManager getJobExecutorManager() {
-//    		return this.jobExecutionManager;
-//    	}
-//    	
-//    	public FlowExecutionHolder getFlowExecutionHolder() {
-//    		return this.holder;
-//    	}
-//    	
-//    	public String getJobName() {
-//    		return getExecutableFlow().getName();
-//    	}
-//    	
-//    	public String getJobId() {
-//    		return getExecutableFlow().getId();
-//    	}
-//    	
-//    	public String getQueuedTime() {
-//    		return DateTimeFormat.forPattern("MM-dd-yyyy HH:mm:ss").print(queuedTime);
-//    	}	
-//    }
-   
+       
     /**
      * A runnable adapter for a Job
      */
